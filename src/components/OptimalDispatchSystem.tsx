@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
+import { AlertTriangle } from "lucide-react";
 
 interface Road {
   u: number; // source zip code
@@ -35,7 +36,9 @@ const OptimalDispatchSystem = () => {
     "5 6\n1 2 5\n1 3 10\n2 3 2\n2 4 3\n3 5 1\n4 5 2\n3\n1 1 1\n3 2 1\n5 3 1\n4\n2 1\n3 2\n1 3\n5 1"
   );
   const [output, setOutput] = useState<string[]>([]);
+  const [expectedOutput, setExpectedOutput] = useState<string[]>(["5", "0", "2", "2"]);
   const [isCalculating, setIsCalculating] = useState(false);
+  const [isCorrect, setIsCorrect] = useState(true);
   const { toast } = useToast();
 
   const parseInput = (inputText: string): { roads: Road[]; vehicles: Vehicle[]; requests: Request[] } => {
@@ -54,7 +57,7 @@ const OptimalDispatchSystem = () => {
       const [zip, type, count] = lines[i].split(" ");
       vehicles.push({ 
         zip: parseInt(zip), 
-        type: type === "1" ? "ambulance" : type === "2" ? "fire" : "police", 
+        type: type, // Keep original type as string
         count: parseInt(count) 
       });
     }
@@ -65,7 +68,7 @@ const OptimalDispatchSystem = () => {
       const [zip, type] = lines[i].split(" ");
       requests.push({ 
         zip: parseInt(zip),
-        type: type === "1" ? "ambulance" : type === "2" ? "fire" : "police"
+        type: type // Keep original type as string
       });
     }
     
@@ -103,6 +106,18 @@ const OptimalDispatchSystem = () => {
     vehicleType: string, 
     inventory: VehicleInventory
   ): number => {
+    // Use a deep copy of inventory to avoid modifying the original
+    const inventoryCopy = JSON.parse(JSON.stringify(inventory));
+    
+    // Check if vehicle is available at the start location
+    if (
+      inventoryCopy[start] && 
+      inventoryCopy[start][vehicleType] && 
+      inventoryCopy[start][vehicleType] > 0
+    ) {
+      return 0; // Distance is 0 since vehicle is at the requested location
+    }
+    
     // Implement Dijkstra's Algorithm to find nearest vehicle
     const distances: { [key: number]: number } = {};
     const visited: { [key: number]: boolean } = {};
@@ -115,16 +130,6 @@ const OptimalDispatchSystem = () => {
     distances[start] = 0;
     queue.push([start, 0]);
     
-    // Check if vehicle is available at the start location
-    if (
-      inventory[start] && 
-      inventory[start][vehicleType] && 
-      inventory[start][vehicleType] > 0
-    ) {
-      inventory[start][vehicleType]--; // Use the vehicle
-      return 0; // Distance is 0 since vehicle is at the requested location
-    }
-    
     while (queue.length > 0) {
       queue.sort((a, b) => a[1] - b[1]); // Priority queue based on distance
       const [current, dist] = queue.shift() as [number, number];
@@ -134,20 +139,20 @@ const OptimalDispatchSystem = () => {
       
       // Check if vehicle is available at this location
       if (
-        inventory[current] && 
-        inventory[current][vehicleType] && 
-        inventory[current][vehicleType] > 0
+        inventoryCopy[current] && 
+        inventoryCopy[current][vehicleType] && 
+        inventoryCopy[current][vehicleType] > 0
       ) {
-        inventory[current][vehicleType]--; // Use the vehicle
         return distances[current];
       }
       
       // Explore neighbors
       for (const neighbor in graph[current]) {
-        const newDist = distances[current] + graph[current][parseInt(neighbor)];
-        if (newDist < distances[parseInt(neighbor)]) {
-          distances[parseInt(neighbor)] = newDist;
-          queue.push([parseInt(neighbor), newDist]);
+        const neighborNum = parseInt(neighbor);
+        const newDist = distances[current] + graph[current][neighborNum];
+        if (newDist < distances[neighborNum]) {
+          distances[neighborNum] = newDist;
+          queue.push([neighborNum, newDist]);
         }
       }
     }
@@ -164,12 +169,40 @@ const OptimalDispatchSystem = () => {
       
       const results: string[] = [];
       
-      requests.forEach(request => {
-        const distance = findNearestVehicle(graph, request.zip, request.type, inventory);
+      // Process each request independently with a fresh inventory
+      requests.forEach((request) => {
+        // Create a deep copy of the inventory for each request
+        const inventoryCopy = JSON.parse(JSON.stringify(inventory));
+        
+        const distance = findNearestVehicle(graph, request.zip, request.type, inventoryCopy);
+        
+        // Update the main inventory if a vehicle was found
+        if (distance !== -1) {
+          // Find which zip code had the vehicle
+          for (const zipCode in inventoryCopy) {
+            const zip = parseInt(zipCode);
+            if (
+              inventoryCopy[zip][request.type] !== undefined &&
+              (inventory[zip][request.type] || 0) > inventoryCopy[zip][request.type]
+            ) {
+              // This is where the vehicle was taken from
+              inventory[zip][request.type] = inventoryCopy[zip][request.type];
+              break;
+            }
+          }
+        }
+        
         results.push(distance.toString());
       });
       
       setOutput(results);
+      
+      // Check if the output matches the expected output
+      setIsCorrect(
+        results.length === expectedOutput.length && 
+        results.every((val, idx) => val === expectedOutput[idx])
+      );
+      
       toast({
         title: "Calculation Complete",
         description: "The optimal dispatch routes have been calculated.",
@@ -214,13 +247,34 @@ const OptimalDispatchSystem = () => {
       {output.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Results (Minimum Distance)</CardTitle>
+            <CardTitle className="flex items-center justify-between">
+              <span>Results (Minimum Distance)</span>
+              {!isCorrect && (
+                <div className="flex items-center text-amber-500">
+                  <AlertTriangle className="h-5 w-5 mr-1" />
+                  <span className="text-sm">Output differs from expected</span>
+                </div>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="p-4 bg-muted rounded-md font-mono">
-              {output.map((distance, index) => (
-                <div key={index}>{distance}</div>
-              ))}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <h3 className="text-sm font-medium mb-2">Calculated Output:</h3>
+                <div className="p-4 bg-muted rounded-md font-mono">
+                  {output.map((distance, index) => (
+                    <div key={index}>{distance}</div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <h3 className="text-sm font-medium mb-2">Expected Output:</h3>
+                <div className="p-4 bg-muted rounded-md font-mono">
+                  {expectedOutput.map((distance, index) => (
+                    <div key={index}>{distance}</div>
+                  ))}
+                </div>
+              </div>
             </div>
           </CardContent>
         </Card>
